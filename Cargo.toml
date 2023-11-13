@@ -1,0 +1,26 @@
+[package]
+name = "stm32h743"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+embedded-hal = "*"
+nb = "*"
+cortex-m = "*"
+cortex-m-rt = "*"
+# Panic behaviour, see https://crates.io/keywords/panic-impl for alternatives
+panic-halt = "*"
+fugit = "0.3.7"
+# ssd1306 = "0.8.0"
+# embedded-graphics = "0.8.1"
+# embedded-graphics = "0.8.0"
+# tinybmp = "0.5.0"
+# cortex-m-semihosting = "0.5.0"
+# rate = "0.3.0"
+
+[dependencies.stm32h7xx-hal]
+version = "*"
+features = ["stm32h743v", "rt"] # replace the model of your microcontroller here
+# and add other required features
