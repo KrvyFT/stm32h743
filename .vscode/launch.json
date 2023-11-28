@@ -11,13 +11,16 @@
             "request": "launch",
             "type": "cortex-debug",
             "servertype": "openocd",
+            "preLaunchCommands": [
+                "monitor arm semihosting enable"
+            ],
             "configFiles": [
                 "openocd.cfg"
             ],
             "searchDir": [],
             "runToEntryPoint": "main",
             "showDevDebugOutput": "none",
-            "svdFile": "./STM32F411.svd",
+            "svdFile": "./STM32F743.svd",
             // "gdbPath": "/usr/bin/arm-none-eabi-gdb"
         },
     ]
