@@ -1,8 +1,10 @@
 use core::fmt::Debug;
+use fugit::RateExtU32;
 use stm32h7xx_hal::{
-    device::bdma::ch,
+    gpio::{Alternate, Pin},
     pac,
-    xspi::{self, Qspi},
+    rcc::CoreClocks,
+    xspi::{self, Qspi, XspiExt},
 };
 
 // 每页大小为 256 字节
@@ -42,7 +44,7 @@ pub enum Control {
     Reset = 0x99,
     PowerDown = 0xB9,
     ReleasePowerDown = 0xAB,
-    UniqueId = 0x4b,
+    UniqueId = 0x4B,
     WriteEnable = 0x06,
     WriteDisable = 0x04,
     WriteStatusReg = 0x01,
@@ -54,10 +56,21 @@ pub enum Control {
 }
 pub use Control::*;
 
-pub struct Flash(pub Qspi<pac::QUADSPI>);
+pub struct Flash(Qspi<pac::QUADSPI>);
 
 impl Flash {
-    pub fn new(qspi: Qspi<pac::QUADSPI>) -> Self {
+    pub fn new(
+        qad: pac::QUADSPI,
+        sck: Pin<'B', 2, Alternate<9>>,
+        io0: Pin<'D', 11, Alternate<9>>,
+        io1: Pin<'D', 12, Alternate<9>>,
+        io2: Pin<'E', 2, Alternate<9>>,
+        io3: Pin<'D', 13, Alternate<9>>,
+        clock: &CoreClocks,
+        qspi: stm32h7xx_hal::rcc::rec::Qspi,
+    ) -> Self {
+        let mut qspi = qad.bank1((sck, io0, io1, io2, io3), 128.MHz(), clock, qspi);
+        qspi.configure_mode(xspi::QspiMode::FourBit).unwrap();
         Self(qspi)
     }
 
@@ -73,6 +86,17 @@ impl Flash {
             )
             .unwrap();
         buffer[0]
+    }
+
+    pub fn rest_status_registry(&mut self) {
+        self.0
+            .write_extended(
+                xspi::QspiWord::U8(WriteStatusReg as u8),
+                xspi::QspiWord::U8(0b00000000),
+                xspi::QspiWord::None,
+                &[],
+            )
+            .unwrap();
     }
 
     fn busy(&mut self) -> bool {
@@ -174,7 +198,7 @@ impl Flash {
         if address + buf.len() as u32 > CAPACITY {
             return Err(Error::OutOfBounds);
         }
-
+        self.erase(address);
         let chunk_len = (PAGE_SIZE - (address & 0x000000FF)) as usize;
         let chunk_len = chunk_len.min(buf.len());
         self.write_page(address, &buf[..chunk_len]).unwrap();
@@ -189,18 +213,40 @@ impl Flash {
             }
             self.write_page(address, &buf[chunk_len..]).unwrap();
         }
+
+        self.readback_check(address, &buf).unwrap();
         Ok(())
     }
 
-    pub fn rest_status_registry(&mut self) {
+    fn readback_check(&mut self, mut address: u32, data: &[u8]) -> Result<(), Error> {
+        const CHUNK_SIZE: usize = 64;
+
+        let mut buf = [0; CHUNK_SIZE];
+        for chunk in data.chunks(CHUNK_SIZE) {
+            let buf = &mut buf[..chunk.len()];
+            self.read(address, buf).unwrap();
+            address += CHUNK_SIZE as u32;
+
+            if buf != chunk {
+                return Err(Error::ReadbackFail);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn erase(&mut self, address: u32) {
+        self.enable_write().unwrap();
         self.0
             .write_extended(
-                xspi::QspiWord::U8(WriteStatusReg as u8),
-                xspi::QspiWord::U8(0b00000000),
+                xspi::QspiWord::U8(SectorErase as u8),
+                xspi::QspiWord::U24(address),
                 xspi::QspiWord::None,
                 &[],
             )
             .unwrap();
+
+        while self.busy() {}
     }
 
     pub fn erase_chip(&mut self) -> Result<(), Error> {
@@ -220,8 +266,29 @@ impl Flash {
         Ok(())
     }
 
-    pub fn erase(&mut self, address: u32) {
+    pub fn erase_range(&mut self, start: u32, end: u32) -> Result<(), Error> {
+        if start % SECTOR_SIZE != 0 {
+            return Err(Error::NotAligned);
+        }
+        if end % SECTOR_SIZE != 0 {
+            return Err(Error::NotAligned);
+        }
+        if start > end {
+            return Err(Error::OutOfBounds);
+        }
+
+        for sector in start..end {
+            self.erase_sector(sector).unwrap();
+        }
+        Ok(())
+    }
+
+    pub fn erase_sector(&mut self, index: u32) -> Result<(), Error> {
+        if index > N_SECTORS {
+            return Err(Error::OutOfBounds);
+        }
         self.enable_write().unwrap();
+        let address = index * SECTOR_SIZE;
         self.0
             .write_extended(
                 xspi::QspiWord::U8(SectorErase as u8),
@@ -230,7 +297,84 @@ impl Flash {
                 &[],
             )
             .unwrap();
-
         while self.busy() {}
+
+        for offset in (0..SECTOR_SIZE).step_by(64) {
+            self.readback_check(address + offset, &[0xFF; 64])?;
+        }
+
+        Ok(())
+    }
+
+    pub fn erase_block_32k(&mut self, index: u32) -> Result<(), Error> {
+        if index >= N_BLOCKS_32K {
+            return Err(Error::OutOfBounds);
+        }
+
+        self.enable_write()?;
+
+        let address = index * BLOCK_32K_SIZE;
+
+        self.0
+            .write_extended(
+                xspi::QspiWord::U8(Block32Erase as u8),
+                xspi::QspiWord::U24(address),
+                xspi::QspiWord::None,
+                &[],
+            )
+            .unwrap();
+
+        for offset in (0..BLOCK_32K_SIZE).step_by(64) {
+            self.readback_check(address + offset, &[0xFF; 64])?;
+        }
+
+        Ok(())
+    }
+
+    pub fn erase_block_64k(&mut self, index: u32) -> Result<(), Error> {
+        if index >= N_BLOCKS_64K {
+            return Err(Error::OutOfBounds);
+        }
+
+        self.enable_write()?;
+
+        let address = index * BLOCK_64K_SIZE;
+
+        self.0
+            .write_extended(
+                xspi::QspiWord::U8(Block64Erase as u8),
+                xspi::QspiWord::U24(address),
+                xspi::QspiWord::None,
+                &[],
+            )
+            .unwrap();
+
+        for offset in (0..BLOCK_32K_SIZE).step_by(64) {
+            self.readback_check(address + offset, &[0xFF; 64])?;
+        }
+
+        Ok(())
+    }
+
+    pub fn enable_power_down_mode(&mut self) {
+        self.0
+            .write_extended(
+                xspi::QspiWord::U8(PowerDown as u8),
+                xspi::QspiWord::None,
+                xspi::QspiWord::None,
+                &[],
+            )
+            .unwrap();
+    }
+
+    pub fn disable_power_down_mode(&mut self) {
+        self.0
+            .write_extended(
+                xspi::QspiWord::U8(ReleasePowerDown as u8),
+                xspi::QspiWord::None,
+                xspi::QspiWord::None,
+                &[],
+            )
+            .unwrap();
     }
 }
