@@ -7,23 +7,14 @@ use stm32h7xx_hal::{
     xspi::{self, Qspi, XspiExt},
 };
 
-// 每页大小为 256 字节
 pub const PAGE_SIZE: u32 = 256;
-// 总共有 32768 页
 pub const N_PAGES: u32 = 32768;
-// 总容量为 PAGE_SIZE * N_PAGES 字节W
 pub const CAPACITY: u32 = PAGE_SIZE * N_PAGES;
-// 每扇区大小为 PAGE_SIZE * 16 字节
 pub const SECTOR_SIZE: u32 = PAGE_SIZE * 16;
-// 总共有 N_PAGES / 16 个扇区
 pub const N_SECTORS: u32 = N_PAGES / 16;
-// 每块 32KB 大小为 SECTOR_SIZE * 8 字节
 pub const BLOCK_32K_SIZE: u32 = SECTOR_SIZE * 8;
-// 总共有 N_SECTORS / 8 个 32KB 块
 pub const N_BLOCKS_32K: u32 = N_SECTORS / 8;
-// 每块 64KB 大小为 BLOCK_32K_SIZE * 2 字节
 pub const BLOCK_64K_SIZE: u32 = BLOCK_32K_SIZE * 2;
-// 总共有 N_BLOCKS_32K / 2 个 64KB 块
 pub const N_BLOCKS_64K: u32 = N_BLOCKS_32K / 2;
 
 #[derive(Debug)]
@@ -49,7 +40,7 @@ pub enum Control {
     WriteDisable = 0x04,
     WriteStatusReg = 0x01,
     WritePage = 0x02,
-    WriteFourPage = 0x32,
+    // WriteFourPage = 0x32,
     ReadStatusReg1 = 0x05,
     ReadStatusReg2 = 0x35,
     ReadData = 0x03,
@@ -69,8 +60,8 @@ impl Flash {
         clock: &CoreClocks,
         qspi: stm32h7xx_hal::rcc::rec::Qspi,
     ) -> Self {
-        let mut qspi = qad.bank1((sck, io0, io1, io2, io3), 128.MHz(), clock, qspi);
-        qspi.configure_mode(xspi::QspiMode::FourBit).unwrap();
+        let mut qspi = qad.bank1((sck, io0, io1, io2, io3), 80.MHz(), clock, qspi);
+        qspi.configure_mode(xspi::QspiMode::OneBit).unwrap();
         Self(qspi)
     }
 
@@ -177,9 +168,6 @@ impl Flash {
     }
 
     pub fn write_page(&mut self, address: u32, buf: &[u8]) -> Result<(), Error> {
-        if (address & 0x000000FF) + buf.len() as u32 > PAGE_SIZE {
-            return Err(Error::OutOfBounds);
-        }
         self.enable_write().unwrap();
         self.0
             .write_extended(
